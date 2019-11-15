@@ -2,104 +2,130 @@ package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])
 
-proto_library(
-    name = "annotations_proto",
-    srcs = [
-        "annotations.proto",
+exports_files(["version_config.textproto"])
+
+load("//bazel:proto.bzl", "fhir_proto_library")
+load("//bazel:protogen.bzl", "gen_fhir_protos")
+
+fhir_proto_library(
+    srcs = ["datatypes.proto"],
+    proto_deps = [
+        "//proto:annotations_proto",
     ],
-    deps = [
-        "@com_google_protobuf//:descriptor_proto",
-    ],
+    proto_library_prefix = "datatypes",
 )
 
-java_proto_library(
-    name = "annotations_java_proto",
-    deps = [":annotations_proto"],
-)
-
-proto_library(
-    name = "codes_proto",
-    srcs = [
-        "codes.proto",
-    ],
-    deps = [
-        ":annotations_proto",
+fhir_proto_library(
+    srcs = ["codes.proto"],
+    proto_deps = [
         ":datatypes_proto",
+        "//proto:annotations_proto",
     ],
+    proto_library_prefix = "codes",
 )
 
-java_proto_library(
-    name = "codes_java_proto",
-    deps = [":codes_proto"],
-)
-
-proto_library(
-    name = "datatypes_proto",
-    srcs = [
-        "datatypes.proto",
-    ],
-    deps = [
-        ":annotations_proto",
-    ],
-)
-
-java_proto_library(
-    name = "datatypes_java_proto",
-    deps = [":datatypes_proto"],
-)
-
-proto_library(
-    name = "metadatatypes_proto",
-    srcs = [
-        "metadatatypes.proto",
-    ],
-    deps = [
-        ":annotations_proto",
+fhir_proto_library(
+    srcs = ["metadatatypes.proto"],
+    proto_deps = [
         ":codes_proto",
         ":datatypes_proto",
+        "//proto:annotations_proto",
     ],
+    proto_library_prefix = "metadatatypes",
 )
 
-java_proto_library(
-    name = "metadatatypes_java_proto",
-    deps = [":metadatatypes_proto"],
-)
-
-proto_library(
-    name = "extensions_proto",
+fhir_proto_library(
     srcs = [
-        "base64_separator_stride.proto",
-        "elementdefinition_binding_name.proto",
-        "primitive_has_no_value.proto",
-        "structuredefinition_explicit_type_name.proto",
+        "extensions.proto",
+        "google_extensions.proto",
     ],
-    deps = [
-        ":annotations_proto",
+    proto_deps = [
+        ":codes_proto",
         ":datatypes_proto",
+        "//proto:annotations_proto",
     ],
+    proto_library_prefix = "extensions",
 )
 
-java_proto_library(
-    name = "extensions_java_proto",
-    deps = [":extensions_proto"],
-)
-
-proto_library(
-    name = "resources_proto",
+fhir_proto_library(
     srcs = [
         "resources.proto",
     ],
-    deps = [
-        ":annotations_proto",
+    proto_deps = [
         ":codes_proto",
         ":datatypes_proto",
         ":metadatatypes_proto",
+        "//proto:annotations_proto",
     ],
+    proto_library_prefix = "resources",
 )
 
-java_proto_library(
-    name = "resources_java_proto",
-    deps = [":resources_proto"],
+fhir_proto_library(
+    srcs = [
+        "profiles.proto",
+    ],
+    proto_deps = [
+        ":codes_proto",
+        ":datatypes_proto",
+        ":extensions_proto",
+        ":metadatatypes_proto",
+        ":resources_proto",
+        "//proto:annotations_proto",
+    ],
+    proto_library_prefix = "profiles",
+)
+
+gen_fhir_protos(
+    name = "uscore",
+    additional_proto_imports = [
+        "proto/stu3/uscore_codes.proto",
+    ],
+    package = "//spec:uscore_stu3_package",
+)
+
+fhir_proto_library(
+    srcs = [
+        "uscore.proto",
+    ],
+    proto_deps = [
+        ":codes_proto",
+        ":datatypes_proto",
+        ":metadatatypes_proto",
+        ":resources_proto",
+        ":uscore_codes_proto",
+        "//proto:annotations_proto",
+    ],
+    proto_library_prefix = "uscore",
+)
+
+fhir_proto_library(
+    srcs = [
+        "uscore_codes.proto",
+    ],
+    proto_deps = [
+        ":datatypes_proto",
+        "//proto:annotations_proto",
+    ],
+    proto_library_prefix = "uscore_codes",
+)
+
+fhir_proto_library(
+    srcs = [
+        "version_config.proto",
+    ],
+    proto_library_prefix = "version_config",
+)
+
+fhir_proto_library(
+    srcs = [
+        "profile_config.proto",
+    ],
+    proto_deps = [
+        "//proto:annotations_proto",
+        "//proto/r4/core:codes_proto",
+        "//proto/r4/core:datatypes_proto",
+    ],
+    proto_library_prefix = "profile_config",
 )
 
 # We also make the .proto files readable for testing.

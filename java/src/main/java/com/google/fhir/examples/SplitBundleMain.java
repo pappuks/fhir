@@ -16,34 +16,48 @@ package com.google.fhir.examples;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
-import com.google.fhir.stu3.JsonFormat.Parser;
-import com.google.fhir.stu3.ResourceUtils;
-import com.google.fhir.stu3.proto.Bundle;
+import com.google.api.client.json.gson.GsonFactory;
+import com.google.api.services.bigquery.model.TableSchema;
+import com.google.fhir.common.BigQuerySchema;
+import com.google.fhir.common.JsonFormat;
+import com.google.fhir.common.JsonFormat.Parser;
+import com.google.fhir.common.JsonFormat.Printer;
+import com.google.fhir.common.ResourceUtils;
+import com.google.fhir.r4.core.Bundle;
 import com.google.protobuf.Message;
-import com.google.protobuf.util.JsonFormat.Printer;
 import java.io.BufferedWriter;
+import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * This example splits a set of FHIR bundles into individual resources, saved as ndjson files. Each
- * argument is assumed to be an input file.
+ * This example splits a set of FHIR bundles into individual resources, saved as ndjson files. The
+ * first argument is assumed to be the target output directory, and each subsequent argument is an
+ * input file.
  */
 public class SplitBundleMain {
 
   public static void main(String[] args) throws IOException {
-    Parser fhirParser = com.google.fhir.stu3.JsonFormat.getParser();
-    Printer protoPrinter =
-        com.google.protobuf.util.JsonFormat.printer().omittingInsignificantWhitespace();
+    Parser fhirParser = com.google.fhir.common.JsonFormat.getParser();
+    Printer fhirPrinter = JsonFormat.getPrinter().omittingInsignificantWhitespace();
+    Printer analyticPrinter =
+        JsonFormat.getPrinter().omittingInsignificantWhitespace().forAnalytics();
 
     // Process the input files one by one, and count the number of processed resources.
     Map<String, Integer> counts = new HashMap<>();
     // We create one file per output resource type.
-    Map<String, BufferedWriter> output = new HashMap<>();
-    for (String file : args) {
+    Map<String, BufferedWriter> fhirOutput = new HashMap<>();
+    Map<String, BufferedWriter> analyticOutput = new HashMap<>();
+    // We create one schema per output resource type.
+    Map<String, TableSchema> schema = new HashMap<>();
+
+    String outputDir = args[0];
+    for (int i = 1; i < args.length; i++) {
+      String file = args[i];
       System.out.println("Processing " + file + "...");
       String input = new String(Files.readAllBytes(Paths.get(file)), UTF_8);
 
@@ -65,17 +79,40 @@ public class SplitBundleMain {
         String resourceType = ResourceUtils.getResourceType(resource);
         int count = counts.containsKey(resourceType) ? counts.get(resourceType) : 0;
         counts.put(resourceType, count + 1);
-        if (!output.containsKey(resourceType)) {
-          output.put(
-              resourceType, Files.newBufferedWriter(Paths.get(resourceType + ".ndjson"), UTF_8));
+        if (!fhirOutput.containsKey(resourceType)) {
+          fhirOutput.put(
+              resourceType,
+              Files.newBufferedWriter(Paths.get(outputDir, resourceType + ".fhir.ndjson"), UTF_8));
+          analyticOutput.put(
+              resourceType,
+              Files.newBufferedWriter(
+                  Paths.get(outputDir, resourceType + ".analytic.ndjson"), UTF_8));
         }
-        BufferedWriter resourceOutput = output.get(resourceType);
-        protoPrinter.appendTo(resource, resourceOutput);
+        if (!schema.containsKey(resourceType)) {
+          // Generate a schema for this type.
+          schema.put(resourceType, BigQuerySchema.fromDescriptor(resource.getDescriptorForType()));
+        }
+        BufferedWriter resourceOutput = fhirOutput.get(resourceType);
+        fhirPrinter.appendTo(resource, resourceOutput);
         resourceOutput.newLine();
+
+        BufferedWriter analyticResourceOutput = analyticOutput.get(resourceType);
+        analyticPrinter.appendTo(resource, analyticResourceOutput);
+        analyticResourceOutput.newLine();
       }
     }
-    for (BufferedWriter writer : output.values()) {
+    for (BufferedWriter writer : fhirOutput.values()) {
       writer.close();
+    }
+    for (BufferedWriter writer : analyticOutput.values()) {
+      writer.close();
+    }
+    // Write the schemas to disk.
+    GsonFactory gsonFactory = new GsonFactory();
+    for (String resourceType : schema.keySet()) {
+      String filename = Paths.get(outputDir, resourceType + ".schema.json").toString();
+      com.google.common.io.Files.asCharSink(new File(filename), StandardCharsets.UTF_8)
+          .write(gsonFactory.toPrettyString(schema.get(resourceType).getFields()));
     }
     System.out.println("Processed " + args.length + " input files. Total number of resources:");
     for (Map.Entry<String, Integer> count : counts.entrySet()) {

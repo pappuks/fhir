@@ -4,32 +4,46 @@ package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])
 
-# These files are sample resources from the FHIR spec.
+# These files are used to help test bigquery integration.
+filegroup(
+    name = "bigquery",
+    srcs = glob([
+        "bigquery/*.json",
+    ]),
+)
+
+# These files are prototxt representations of sample resources provided by FHIR.
 filegroup(
     name = "examples",
     srcs = glob([
-        "examples/*.json",
         "examples/*.prototxt",
     ]),
 )
 
-# These files contain testdata for generating and parsing extensions.
+# These files are ndjson representations of some sample resources provided by FHIR.
 filegroup(
-    name = "extensions",
+    name = "ndjson",
     srcs = glob([
-        "extensions/*.json",
-        "extensions/*.descriptor.prototxt",
-        "extensions/*.extension.prototxt",
-        "extensions/*.message.prototxt",
+        "ndjson/*.ndjson",
     ]),
 )
 
-# These files contain StructureDefinitions used to generate the protos.
+# These files contain testdata for generating protos.
 filegroup(
-    name = "structure_definitions",
+    name = "descriptors",
     srcs = glob([
-        "structure_definitions/*.profile.json",
-        "structure_definitions/*.descriptor.prototxt",
+        "descriptors/*",
+    ]),
+)
+
+# These files contain google extensions.
+filegroup(
+    name = "google",
+    srcs = glob([
+        "google/*.json",
+        "google/*.descriptor.prototxt",
+        "google/*.extension.prototxt",
+        "google/*.message.prototxt",
     ]),
 )
 
@@ -37,7 +51,32 @@ filegroup(
 filegroup(
     name = "validation",
     srcs = glob([
-        "validation/*.valid.ndjson",
-        "validation/*.invalid.ndjson",
+        "validation/*",
     ]),
+)
+
+filegroup(
+    name = "labels",
+    srcs = glob([
+        "labels/*",
+    ]),
+)
+
+filegroup(
+    name = "tensorflow",
+    srcs = glob([
+        "tensorflow/*",
+    ]),
+)
+
+filegroup(
+    name = "profilegenerator",
+    srcs = glob([
+        "profilegenerator/*",
+    ]),
+)
+
+alias(
+    name = "profiles",
+    actual = "//testdata/stu3/profiles:testdata",
 )

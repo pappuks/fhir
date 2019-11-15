@@ -17,11 +17,10 @@ package com.google.fhir.examples;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.io.Files;
-import com.google.fhir.stu3.JsonFormat.Parser;
-import com.google.fhir.stu3.ResourceUtils;
-import com.google.fhir.stu3.proto.ContainedResource;
+import com.google.fhir.common.JsonFormat.Parser;
+import com.google.fhir.common.ResourceUtils;
+import com.google.fhir.r4.core.ContainedResource;
 import com.google.protobuf.Message;
-import com.google.protobuf.TextFormat;
 import java.io.IOException;
 
 /**
@@ -44,7 +43,7 @@ public class JsonToProtoMain {
 
       // Extract and print the parsed resource.
       Message parsed = ResourceUtils.getContainedResource(builder.build());
-      Files.asCharSink(entry.output, UTF_8).write(TextFormat.printToString(parsed));
+      Files.asCharSink(entry.output, UTF_8).write(parsed.toString());
     }
   }
 }
