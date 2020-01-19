@@ -12,7 +12,7 @@
 //    See the License for the specific language governing permissions and
 //    limitations under the License.
 
-package com.google.fhir.examples;
+package com.google.fhir.protogen;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -23,17 +23,13 @@ import com.beust.jcommander.ParameterException;
 import com.google.common.base.CaseFormat;
 import com.google.common.base.Splitter;
 import com.google.common.io.Files;
+import com.google.fhir.common.AnnotationUtils;
 import com.google.fhir.common.FileUtils;
 import com.google.fhir.common.JsonFormat;
 import com.google.fhir.dstu2.StructureDefinitionTransformer;
 import com.google.fhir.proto.Annotations;
 import com.google.fhir.proto.Annotations.FhirVersion;
 import com.google.fhir.proto.PackageInfo;
-import com.google.fhir.protogen.FhirPackage;
-import com.google.fhir.protogen.GeneratorUtils;
-import com.google.fhir.protogen.ProtoFilePrinter;
-import com.google.fhir.protogen.ProtoGenerator;
-import com.google.fhir.protogen.ValueSetGenerator;
 import com.google.fhir.r4.core.Bundle;
 import com.google.fhir.r4.core.StructureDefinition;
 import com.google.fhir.r4.core.StructureDefinitionKindCode;
@@ -103,6 +99,11 @@ class ProtoGeneratorMain {
         names = {"--package_info"},
         description = "Prototxt containing google.fhir.proto.PackageInfo")
     private String packageInfo = null;
+
+    @Parameter(
+        names = {"--sort"},
+        description = "If true, will sort messages within a file by message name.")
+    private boolean sort = false;
 
     @Parameter(
         names = {"--stu3_core_dep"},
@@ -284,12 +285,13 @@ class ProtoGeneratorMain {
     writer.println("Generating proto descriptors...");
     writer.flush();
 
-    ProtoFilePrinter printer = new ProtoFilePrinter(packageInfo);
     ValueSetGenerator valueSetGenerator = new ValueSetGenerator(packageInfo, fhirPackages);
     ProtoGenerator generator =
         packageInfo.getFhirVersion() != FhirVersion.R4
             ? new ProtoGenerator(packageInfo, fhirPackages)
-            : new ProtoGenerator(packageInfo, fhirPackages, valueSetGenerator);
+            : new ProtoGenerator(
+                packageInfo, fhirPackages, valueSetGenerator);
+    ProtoFilePrinter printer = new ProtoFilePrinter(packageInfo);
 
     if (args.emitCodesProto) {
       if (inputPackage == null) {
@@ -459,6 +461,26 @@ class ProtoGeneratorMain {
       for (String additionalImport : args.additionalImports) {
         proto = proto.toBuilder().addDependency(new File(additionalImport).toString()).build();
       }
+    }
+    if (args.sort) {
+      List<DescriptorProto> messages = new ArrayList<>(proto.getMessageTypeList());
+      proto =
+          proto.toBuilder()
+              .clearMessageType()
+              .addAllMessageType(
+                  messages.stream()
+                      .sorted(
+                          (a, b) -> {
+                            boolean aIsPrimitive = AnnotationUtils.isPrimitiveType(a);
+                            boolean bIsPrimitive = AnnotationUtils.isPrimitiveType(b);
+                            if (aIsPrimitive != bIsPrimitive) {
+                              return aIsPrimitive ? -1 : 1;
+                            } else {
+                              return a.getName().compareTo(b.getName());
+                            }
+                          })
+                      .collect(Collectors.toList()))
+              .build();
     }
     String protoFileContents = printer.print(proto);
 

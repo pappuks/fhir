@@ -35,8 +35,8 @@ java_library(
         ":structure_definition_transformer",
         "//proto/stu3:datatypes_java_proto",
         "//proto/stu3:extensions_java_proto",
-        "//proto/stu3:profile_config_java_proto",
         "//proto:annotations_java_proto",
+        "//proto:profile_config_java_proto",
         "//proto:protogenerator_annotations_java_proto",
         "//proto/r4/core:codes_java_proto",
         "//proto/r4/core:datatypes_java_proto",
@@ -144,6 +144,7 @@ java_library(
     name = "common",
     srcs = [
         "src/main/java/com/google/fhir/common/AnnotationUtils.java",
+        "src/main/java/com/google/fhir/common/InvalidFhirException.java",
         "src/main/java/com/google/fhir/common/ProtoUtils.java",
     ],
     deps = [
@@ -214,6 +215,42 @@ java_library(
         "@com_google_protobuf//:protobuf_java",
         "@maven//:com_google_code_gson_gson",
         "@maven//:com_google_guava_guava",
+    ],
+)
+
+java_library(
+    name = "resource_validator",
+    srcs = ["src/main/java/com/google/fhir/common/ResourceValidator.java"],
+    deps = [
+        ":common",
+        ":primitive_wrappers",
+        "//proto/stu3:datatypes_java_proto",
+        "//proto:annotations_java_proto",
+        "//proto/r4/core:datatypes_java_proto",
+        "@com_google_protobuf//:protobuf_java",
+        "@maven//:com_google_guava_guava",
+    ],
+)
+
+java_test(
+    name = "ResourceValidatorTest",
+    size = "small",
+    srcs = ["src/test/java/com/google/fhir/common/ResourceValidatorR4Test.java"],
+    data = [
+        "//testdata/r4:validation",
+    ],
+    test_class = "com.google.fhir.common.ResourceValidatorR4Test",
+    deps = [
+        ":common",
+        ":resource_validator",
+        "//proto/r4/core/resources:bundle_and_contained_resource_java_proto",
+        "//proto/r4/core/resources:encounter_java_proto",
+        "//proto/r4/core/resources:observation_java_proto",
+        "@bazel_tools//tools/java/runfiles",
+        "@com_google_protobuf//:protobuf_java",
+        "@maven//:com_google_guava_guava",
+        "@maven//:com_google_truth_truth",
+        "@maven//:junit_junit",
     ],
 )
 
@@ -591,8 +628,8 @@ java_test(
     deps = [
         ":json_format",
         ":protogen",
-        "//proto/stu3:profile_config_java_proto",
         "//proto:annotations_java_proto",
+        "//proto:profile_config_java_proto",
         "//proto/r4/core:datatypes_java_proto",
         "//proto/r4/core/resources:bundle_and_contained_resource_java_proto",
         "//proto/r4/core/resources:structure_definition_java_proto",
@@ -655,7 +692,10 @@ java_test(
     test_class = "com.google.fhir.wrappers.ValidationTest",
     deps = [
         ":json_format",
+        ":primitive_wrappers",
+        "//proto/stu3:codes_java_proto",
         "//proto/stu3:datatypes_java_proto",
+        "//proto/stu3:extensions_java_proto",
         "@bazel_tools//tools/java/runfiles",
         "@com_google_protobuf//:protobuf_java",
         "@maven//:com_google_guava_guava",
@@ -667,14 +707,15 @@ java_test(
 java_binary(
     name = "ProtoGenerator",
     srcs = ["src/main/java/com/google/fhir/protogen/ProtoGeneratorMain.java"],
-    main_class = "com.google.fhir.examples.ProtoGeneratorMain",
+    main_class = "com.google.fhir.protogen.ProtoGeneratorMain",
     deps = [
+        ":common",
         ":file_utils",
         ":json_format",
         ":protogen",
         ":structure_definition_transformer",
-        "//proto/stu3:profile_config_java_proto",
         "//proto:annotations_java_proto",
+        "//proto:profile_config_java_proto",
         "//proto/r4/core:codes_java_proto",
         "//proto/r4/core/resources:bundle_and_contained_resource_java_proto",
         "//proto/r4/core/resources:structure_definition_java_proto",
@@ -697,7 +738,7 @@ java_test(
     deps = [
         ":json_format",
         ":protogen",
-        "//proto/stu3:profile_config_java_proto",
+        "//proto:profile_config_java_proto",
         "//proto/r4/core/resources:bundle_and_contained_resource_java_proto",
         "//proto/r4/core/resources:structure_definition_java_proto",
         "@com_google_protobuf//:protobuf_java",
@@ -715,8 +756,8 @@ java_binary(
         ":file_utils",
         ":json_format",
         ":protogen",
-        "//proto/stu3:profile_config_java_proto",
         "//proto:annotations_java_proto",
+        "//proto:profile_config_java_proto",
         "//proto/r4/core/resources:bundle_and_contained_resource_java_proto",
         "//proto/r4/core/resources:structure_definition_java_proto",
         "@maven//:com_beust_jcommander",
@@ -731,8 +772,8 @@ java_binary(
     deps = [
         ":json_format",
         ":protogen",
-        "//proto/stu3:profile_config_java_proto",
         "//proto:annotations_java_proto",
+        "//proto:profile_config_java_proto",
         "//proto/r4/core/resources:bundle_and_contained_resource_java_proto",
         "//proto/r4/core/resources:structure_definition_java_proto",
         "@com_google_protobuf//:protobuf_java",

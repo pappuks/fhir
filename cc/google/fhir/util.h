@@ -28,6 +28,7 @@
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/reflection.h"
+#include "absl/base/macros.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -37,7 +38,6 @@
 #include "google/fhir/proto_util.h"
 #include "google/fhir/status/status.h"
 #include "google/fhir/status/statusor.h"
-#include "google/fhir/systems/systems.h"
 #include "proto/annotations.pb.h"
 #include "proto/r4/core/datatypes.pb.h"
 #include "proto/stu3/datatypes.pb.h"
@@ -123,8 +123,6 @@ absl::Duration GetDurationFromTimelikeElement(
 absl::Duration GetDurationFromTimelikeElement(
     const ::google::fhir::r4::core::DateTime& datetime);
 
-Status GetTimezone(const std::string& timezone_str, absl::TimeZone* tz);
-
 // Builds a absl::Time from a time-like fhir Element, corresponding to the
 // smallest time greater than this time element. For elements with DAY
 // precision, for example, this will be 86400 seconds past value_us of this
@@ -134,6 +132,14 @@ absl::Time GetUpperBoundFromTimelikeElement(const T& timelike) {
   return absl::FromUnixMicros(timelike.value_us()) +
          GetDurationFromTimelikeElement(timelike);
 }
+
+ABSL_DEPRECATED("Use BuildTimeZoneFromString instead.")
+Status GetTimezone(const std::string& timezone_str, absl::TimeZone* tz);
+
+// Converts a time zone string of the forms found in time-like primitive types
+// into an absl::TimeZone
+StatusOr<absl::TimeZone> BuildTimeZoneFromString(
+    const std::string& time_zone_string);
 
 // Populates the resource oneof on ContainedResource with the passed-in
 // resource.
@@ -231,6 +237,9 @@ Status PopulatedTypedReferenceToResource(const ::google::protobuf::Message& reso
 // resource, an error will be returned.
 // TODO: Split version-specific functionality into separate files.
 StatusOr<stu3::proto::Reference> GetTypedReferenceToResourceStu3(
+    const ::google::protobuf::Message& resource);
+
+StatusOr<r4::core::Reference> GetTypedReferenceToResourceR4(
     const ::google::protobuf::Message& resource);
 
 // Extract the value of a Decimal field as a double.

@@ -15,6 +15,7 @@
 #include "google/protobuf/text_format.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "absl/strings/str_cat.h"
 #include "google/fhir/resource_validation.h"
 #include "google/fhir/test_helper.h"
 #include "proto/r4/core/resources/bundle_and_contained_resource.pb.h"
@@ -32,14 +33,14 @@ using namespace google::fhir::r4::core;  // NOLINT
 
 template <typename T>
 void ValidTest(const std::string& name) {
-  auto status = ValidateResource(
+  auto status = ValidateResourceWithFhirPath(
       ReadProto<T>(absl::StrCat("testdata/r4/validation/", name, ".prototxt")));
   EXPECT_TRUE(status.ok()) << status;
 }
 
 template <typename T>
 void InvalidTest(const std::string& name) {
-  auto status = ValidateResource(
+  auto status = ValidateResourceWithFhirPath(
       ReadProto<T>(absl::StrCat("testdata/r4/validation/", name, ".prototxt")));
 
   std::string error_msg =
@@ -67,6 +68,10 @@ TEST(ResourceValidationTest, InvalidReference) {
   InvalidTest<Observation>("observation_invalid_reference");
 }
 
+TEST(ResourceValidationTest, FHIRPathViolation) {
+  InvalidTest<Observation>("observation_invalid_fhirpath_violation");
+}
+
 TEST(ResourceValidationTest, RepeatedReferenceValid) {
   ValidTest<Encounter>("encounter_valid_repeated_reference");
 }
@@ -91,6 +96,10 @@ TEST(EncounterValidationTest, StartLaterThanEndButEndHasDayPrecision) {
 
 TEST(EncounterValidationTest, Valid) {
   ValidTest<Encounter>("encounter_valid");
+}
+
+TEST(EncounterValidationTest, ValidWithNumericTimezone) {
+  ValidTest<Encounter>("encounter_valid_numeric_timezone");
 }
 
 }  // namespace

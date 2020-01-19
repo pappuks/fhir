@@ -16,19 +16,27 @@
 
 #include <utility>
 
+#include "google/protobuf/descriptor.h"
 #include "google/protobuf/util/message_differencer.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 
 // Include the ANTLR-generated visitor, lexer and parser files.
 #include "absl/memory/memory.h"
 #include "absl/strings/numbers.h"
+#include "absl/strings/escaping.h"
+#include "absl/time/civil_time.h"
+#include "absl/time/time.h"
+#include "absl/types/optional.h"
 #include "google/fhir/annotations.h"
 #include "google/fhir/fhir_path/FhirPathBaseVisitor.h"
 #include "google/fhir/fhir_path/FhirPathLexer.h"
 #include "google/fhir/fhir_path/FhirPathParser.h"
+#include "google/fhir/primitive_wrapper.h"
 #include "google/fhir/proto_util.h"
 #include "google/fhir/status/status.h"
 #include "google/fhir/status/statusor.h"
+#include "google/fhir/util.h"
 #include "proto/r4/core/datatypes.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
 
@@ -60,10 +68,13 @@ using antlr_parser::FhirPathBaseVisitor;
 using antlr_parser::FhirPathLexer;
 using antlr_parser::FhirPathParser;
 
+using ::google::fhir::AreSameMessageType;
 using ::google::fhir::ForEachMessage;
 using ::google::fhir::ForEachMessageHalting;
 using ::google::fhir::IsMessageType;
+using ::google::fhir::JsonPrimitive;
 using ::google::fhir::StatusOr;
+using ::google::fhir::WrapPrimitiveProto;
 
 using internal::ExpressionNode;
 
@@ -89,10 +100,71 @@ StatusOr<bool> MessagesToBoolean(const std::vector<const Message*>& messages) {
   return InvalidArgument("Expression did not evaluate to boolean");
 }
 
+template <class T, class M>
+StatusOr<absl::optional<T>> PrimitiveOrEmpty(
+    const std::vector<const Message*>& messages) {
+  if (messages.empty()) {
+    return absl::optional<T>();
+  }
+
+  if (messages.size() > 1 || !IsPrimitive(messages[0]->GetDescriptor())) {
+    return InvalidArgument(
+        "Expression must be empty or represent a single primitive value.");
+  }
+
+  if (!IsMessageType<M>(*messages[0])) {
+    return InvalidArgument("Single value expression of wrong type.");
+  }
+
+  return absl::optional<T>(dynamic_cast<const M*>(messages[0])->value());
+}
+
+// Returns the string representation of the provided message for messages that
+// are represented in JSON as strings. Requires the presence of exactly one
+// message in the provided collection. For primitive messages that are not
+// represented as a string in JSON a status other than OK will be returned.
+StatusOr<std::string> MessagesToString(
+    const std::vector<const Message*>& messages) {
+  if (messages.size() != 1) {
+    return InvalidArgument("Expression must represent a single value.");
+  }
+
+  const Message* message = messages[0];
+  if (IsMessageType<String>(*message)) {
+    return dynamic_cast<const String*>(message)->value();
+  }
+
+  if (!IsPrimitive(message->GetDescriptor())) {
+    return InvalidArgument("Expression must be a primitive.");
+  }
+
+  StatusOr<JsonPrimitive> json_primitive = WrapPrimitiveProto(*message);
+  std::string json_string = json_primitive.ValueOrDie().value;
+
+  if (!absl::StartsWith(json_string, "\"")) {
+    return InvalidArgument("Expression must evaluate to a string.");
+  }
+
+  // Trim the starting and ending double quotation marks from the string (added
+  // by JsonPrimitive.)
+  return json_string.substr(1, json_string.size() - 2);
+}
+
 // Supported functions.
 constexpr char kExistsFunction[] = "exists";
 constexpr char kNotFunction[] = "not";
 constexpr char kHasValueFunction[] = "hasValue";
+constexpr char kStartsWithFunction[] = "startsWith";
+
+// Logical field in primitives representing the underlying value.
+constexpr char kPrimitiveValueField[] = "value";
+
+// Returns true if the given field is accessing the logical "value"
+// field on FHIR primitives.
+bool IsFhirPrimitiveValue(const FieldDescriptor* field) {
+  return field->name() == kPrimitiveValueField &&
+         IsPrimitive(field->containing_type());
+}
 
 // Expression node that returns literals wrapped in the corresponding
 // protbuf wrapper
@@ -119,6 +191,24 @@ class Literal : public ExpressionNode {
   const PrimitiveType value_;
 };
 
+// Expression node for the empty literal.
+class EmptyLiteral : public ExpressionNode {
+ public:
+  EmptyLiteral() {}
+
+  Status Evaluate(WorkSpace* work_space,
+                  std::vector<const Message*>* results) const override {
+    return Status::OK();
+  }
+
+  // The return type of the empty literal is undefined. If this causes problems,
+  // it is likely we could arbitrarily pick one of the primitive types without
+  // ill-effect.
+  const Descriptor* ReturnType() const override {
+    return nullptr;
+  }
+};
+
 // Implements the InvocationTerm from the FHIRPath grammar,
 // producing a term from the root context message.
 class InvokeTermNode : public ExpressionNode {
@@ -141,9 +231,14 @@ class InvokeTermNode : public ExpressionNode {
 
     } else {
       if (refl->HasField(message, field_)) {
-        const Message& child = refl->GetMessage(message, field_);
-
-        results->push_back(&child);
+        // .value invocations on primitive types should return the FHIR
+        // primitive message type rather than the underlying native primitive.
+        if (IsFhirPrimitiveValue(field_)) {
+          results->push_back(&message);
+        } else {
+          const Message& child = refl->GetMessage(message, field_);
+          results->push_back(&child);
+        }
       }
     }
 
@@ -177,9 +272,15 @@ class InvokeExpressionNode : public ExpressionNode {
     // Iterate through the results of the child expression and invoke
     // the appropriate field.
     for (const Message* child_message : child_results) {
-      ForEachMessage<Message>(
-          *child_message, field_,
-          [&](const Message& result) { results->push_back(&result); });
+      // .value invocations on primitive types should return the FHIR
+      // primitive message type rather than the underlying native primitive.
+      if (IsFhirPrimitiveValue(field_)) {
+        results->push_back(child_message);
+      } else {
+        ForEachMessage<Message>(
+            *child_message, field_,
+            [&](const Message& result) { results->push_back(&result); });
+      }
     }
 
     return Status::OK();
@@ -303,6 +404,66 @@ class HasValueFunction : public ExpressionNode {
   const std::shared_ptr<ExpressionNode> child_;
 };
 
+// Implements the FHIRPath .startsWith() function, which returns true if and
+// only if the child string starts with the given string. When the given string
+// is the empty string .startsWith() returns true.
+//
+// Missing or incorrect parameters will end evaluation and cause Evaluate to
+// return a status other than OK. See
+// http://hl7.org/fhirpath/2018Sep/index.html#functions-2.
+//
+// Please note that execution will proceed on any String-like type.
+// Specifically, any type for which its JsonPrimitive value is a string. This
+// differs from the allowed implicit conversions defined in
+// https://hl7.org/fhirpath/2018Sep/index.html#conversion.
+class StartsWithFunction : public ExpressionNode {
+ public:
+  explicit StartsWithFunction(
+      const std::shared_ptr<ExpressionNode>& child,
+      const std::vector<std::shared_ptr<ExpressionNode>> params)
+      : child_(child), params_(params) {}
+
+  Status Evaluate(WorkSpace* work_space,
+                  std::vector<const Message*>* results) const override {
+    // startsWith requires a single parameter
+    if (params_.size() != 1) {
+      return InvalidArgument(kInvalidArgumentMessage);
+    }
+
+    std::vector<const Message*> child_results;
+    FHIR_RETURN_IF_ERROR(child_->Evaluate(work_space, &child_results));
+
+    std::vector<const Message*> params_results;
+    FHIR_RETURN_IF_ERROR(params_[0]->Evaluate(work_space, &params_results));
+
+    if (child_results.size() != 1 || params_results.size() != 1) {
+      return InvalidArgument(kInvalidArgumentMessage);
+    }
+
+    FHIR_ASSIGN_OR_RETURN(std::string item, MessagesToString(child_results));
+    FHIR_ASSIGN_OR_RETURN(std::string prefix, MessagesToString(params_results));
+
+    Boolean* result = new Boolean();
+    work_space->DeleteWhenFinished(result);
+    result->set_value(absl::StartsWith(item, prefix));
+    results->push_back(result);
+    return Status::OK();
+  }
+
+  const Descriptor* ReturnType() const override {
+    return Boolean::descriptor();
+  }
+
+ private:
+  const std::shared_ptr<ExpressionNode> child_;
+  const std::vector<std::shared_ptr<ExpressionNode>> params_;
+
+  static constexpr char kInvalidArgumentMessage[] =
+      "startsWith must be invoked on a string with a single string "
+      "argument";
+};
+constexpr char StartsWithFunction::kInvalidArgumentMessage[];
+
 // Base class for FHIRPath binary operators.
 class BinaryOperator : public ExpressionNode {
  public:
@@ -348,10 +509,30 @@ class EqualsOperator : public BinaryOperator {
       // Scan for unequal messages.
       result->set_value(true);
       for (int i = 0; i < left_results.size(); ++i) {
-        if (!MessageDifferencer::Equals(*left_results.at(i),
-                                        *right_results.at(i))) {
-          result->set_value(false);
-          break;
+        const Message* left = left_results.at(i);
+        const Message* right = right_results.at(i);
+
+        if (AreSameMessageType(*left, *right)) {
+          if (!MessageDifferencer::Equals(*left, *right)) {
+            result->set_value(false);
+            break;
+          }
+        } else {
+          // When dealing with different types we might be comparing a
+          // primitive type (like an enum) to a literal string, which is
+          // supported. Therefore we simply convert both to string form
+          // and consider them unequal if either is not a string.
+          StatusOr<JsonPrimitive> left_primitive = WrapPrimitiveProto(*left);
+          StatusOr<JsonPrimitive> right_primitive = WrapPrimitiveProto(*right);
+
+          // Comparisons between primitives and non-primitives are valid
+          // in FHIRPath and should simply return false rather than an error.
+          if (!left_primitive.ok() || !right_primitive.ok() ||
+              left_primitive.ValueOrDie().value !=
+                  right_primitive.ValueOrDie().value) {
+            result->set_value(false);
+            break;
+          }
         }
       }
     }
@@ -556,27 +737,74 @@ class ComparisonOperator : public BinaryOperator {
   Status EvalDateTimeComparison(const DateTime* left_message,
                                 const DateTime* right_message,
                                 Boolean* result) const {
-    // TODO: consider support for cross-timezone comparisons.
-    if (left_message->timezone() != right_message->timezone()) {
-      return InvalidArgument(
-          "Date comparisons only supported in same timezone");
-    }
+    absl::Time left_time = absl::FromUnixMicros(left_message->value_us());
+    absl::Time right_time = absl::FromUnixMicros(right_message->value_us());
 
-    const int64_t left = left_message->value_us();
-    const int64_t right = right_message->value_us();
+    FHIR_ASSIGN_OR_RETURN(absl::TimeZone left_zone,
+                          BuildTimeZoneFromString(left_message->timezone()));
+    FHIR_ASSIGN_OR_RETURN(absl::TimeZone right_zone,
+                          BuildTimeZoneFromString(right_message->timezone()));
+
+    // negative if left < right, positive if left > right, 0 if equal
+    absl::civil_diff_t time_difference;
+
+    // The FHIRPath spec (http://hl7.org/fhirpath/#comparison) states that
+    // datetime comparison is done at the finest precision BOTH
+    // dates support. This is equivalent to finding the looser precision
+    // between the two and comparing them, which is simpler to implement here.
+    if (left_message->precision() == DateTime::YEAR ||
+        right_message->precision() == DateTime::YEAR) {
+      absl::CivilYear left_year = absl::ToCivilYear(left_time, left_zone);
+      absl::CivilYear right_year = absl::ToCivilYear(right_time, right_zone);
+      time_difference = left_year - right_year;
+
+    } else if (left_message->precision() == DateTime::MONTH ||
+               right_message->precision() == DateTime::MONTH) {
+      absl::CivilMonth left_month = absl::ToCivilMonth(left_time, left_zone);
+      absl::CivilMonth right_month = absl::ToCivilMonth(right_time, right_zone);
+      time_difference = left_month - right_month;
+
+    } else if (left_message->precision() == DateTime::DAY ||
+               right_message->precision() == DateTime::DAY) {
+      absl::CivilDay left_day = absl::ToCivilDay(left_time, left_zone);
+      absl::CivilDay right_day = absl::ToCivilDay(right_time, right_zone);
+      time_difference = left_day - right_day;
+
+    } else if (left_message->precision() == DateTime::SECOND ||
+               right_message->precision() == DateTime::SECOND) {
+      absl::CivilSecond left_second = absl::ToCivilSecond(left_time, left_zone);
+      absl::CivilSecond right_second =
+          absl::ToCivilSecond(right_time, right_zone);
+      time_difference = left_second - right_second;
+    } else {
+      // Abseil does not support sub-second civil time precision, so we handle
+      // them by first comparing seconds (to resolve timezone differences)
+      // and then comparing the sub-second component if the seconds are
+      // equal.
+      absl::CivilSecond left_second = absl::ToCivilSecond(left_time, left_zone);
+      absl::CivilSecond right_second =
+          absl::ToCivilSecond(right_time, right_zone);
+      time_difference = left_second - right_second;
+
+      // In the same second, so check for sub-second differences.
+      if (time_difference == 0) {
+        time_difference = left_message->value_us() % 1000000 -
+                          right_message->value_us() % 1000000;
+      }
+    }
 
     switch (comparison_type_) {
       case kLessThan:
-        result->set_value(left < right);
+        result->set_value(time_difference < 0);
         break;
       case kGreaterThan:
-        result->set_value(left > right);
+        result->set_value(time_difference > 0);
         break;
       case kLessThanEqualTo:
-        result->set_value(left <= right);
+        result->set_value(time_difference <= 0);
         break;
       case kGreaterThanEqualTo:
-        result->set_value(left >= right);
+        result->set_value(time_difference >= 0);
         break;
     }
 
@@ -608,6 +836,44 @@ class BooleanOperator : public ExpressionNode {
 
   const std::shared_ptr<ExpressionNode> left_;
   const std::shared_ptr<ExpressionNode> right_;
+};
+
+// Implements logic for the "implies" operator. Logic may be found in
+// section 6.5.4 at http://hl7.org/fhirpath/#boolean-logic
+class ImpliesOperator : public BooleanOperator {
+ public:
+  ImpliesOperator(std::shared_ptr<ExpressionNode> left,
+                  std::shared_ptr<ExpressionNode> right)
+      : BooleanOperator(left, right) {}
+
+  Status Evaluate(WorkSpace* work_space,
+                  std::vector<const Message*>* results) const override {
+    std::vector<const Message*> left_results;
+    FHIR_RETURN_IF_ERROR(left_->Evaluate(work_space, &left_results));
+    FHIR_ASSIGN_OR_RETURN(absl::optional<bool> left_result,
+                          (PrimitiveOrEmpty<bool, Boolean>(left_results)));
+
+    // Short circuit evaluation when left_result == "false"
+    if (left_result.has_value() && !left_result.value()) {
+      SetResult(true, work_space, results);
+      return Status::OK();
+    }
+
+    std::vector<const Message*> right_results;
+    FHIR_RETURN_IF_ERROR(right_->Evaluate(work_space, &right_results));
+    FHIR_ASSIGN_OR_RETURN(absl::optional<bool> right_result,
+                          (PrimitiveOrEmpty<bool, Boolean>(right_results)));
+
+    if (!left_result.has_value()) {
+      if (right_result.value_or(false)) {
+        SetResult(true, work_space, results);
+      }
+    } else if (right_result.has_value()) {
+      SetResult(right_result.value(), work_space, results);
+    }
+
+    return Status::OK();
+  }
 };
 
 class OrOperator : public BooleanOperator {
@@ -712,12 +978,16 @@ struct InvocationDefinition {
   InvocationDefinition(const std::string& name, const bool is_function)
       : name(name), is_function(is_function) {}
 
+  InvocationDefinition(const std::string& name, const bool is_function,
+                       std::vector<std::shared_ptr<ExpressionNode>> params)
+      : name(name), is_function(is_function), params(params) {}
+
   const std::string name;
 
   // Indicates it is a function invocation rather than a member lookup.
   const bool is_function;
 
-  const std::vector<std::unique_ptr<ExpressionNode>> params;
+  const std::vector<std::shared_ptr<ExpressionNode>> params;
 };
 
 // ANTLR Visitor implementation to translate the AST
@@ -750,7 +1020,8 @@ class FhirPathCompilerVisitor : public FhirPathBaseVisitor {
         expression.as<std::shared_ptr<ExpressionNode>>();
 
     if (definition->is_function) {
-      auto function_node = createFunction(definition->name, expr);
+      auto function_node =
+          createFunction(definition->name, expr, definition->params);
 
       if (function_node == nullptr) {
         return nullptr;
@@ -867,10 +1138,36 @@ class FhirPathCompilerVisitor : public FhirPathBaseVisitor {
     std::string text =
         ctx->function()->identifier()->IDENTIFIER()->getSymbol()->getText();
 
-    // TODO: visit and handle parameters
-    //  in ctx->function()->paramList()->expression()
+    std::vector<std::shared_ptr<ExpressionNode>> evaluated_params;
 
-    return std::make_shared<InvocationDefinition>(text, true);
+    if (ctx->function()->paramList()) {
+      std::vector<FhirPathParser::ExpressionContext*> params =
+          ctx->function()->paramList()->expression();
+      for (auto it = params.begin(); it != params.end(); ++it) {
+        antlrcpp::Any param_any = (*it)->accept(this);
+          evaluated_params.push_back(
+              param_any.isNotNull()
+                  ? param_any.as<std::shared_ptr<ExpressionNode>>()
+                  : std::shared_ptr<ExpressionNode>(nullptr));
+      }
+    }
+
+    return std::make_shared<InvocationDefinition>(text, true, evaluated_params);
+  }
+
+  antlrcpp::Any visitImpliesExpression(
+      FhirPathParser::ImpliesExpressionContext* ctx) override {
+    antlrcpp::Any left_any = ctx->children[0]->accept(this);
+    antlrcpp::Any right_any = ctx->children[2]->accept(this);
+
+    if (!CheckOk()) {
+      return nullptr;
+    }
+
+    auto left = left_any.as<std::shared_ptr<ExpressionNode>>();
+    auto right = right_any.as<std::shared_ptr<ExpressionNode>>();
+
+    return ToAny(std::make_shared<ImpliesOperator>(left, right));
   }
 
   antlrcpp::Any visitOrExpression(
@@ -928,13 +1225,26 @@ class FhirPathCompilerVisitor : public FhirPathBaseVisitor {
           return ToAny(std::make_shared<Literal<Integer, int32_t>>(value));
         }
 
-      case FhirPathLexer::STRING:
+      case FhirPathLexer::STRING: {
         // The lexer keeps the quotes around string literals,
         // so we remove them here. The following assert simply reflects
         // the lexer's guarantees as defined.
         assert(text.length() >= 2);
-        return ToAny(std::make_shared<Literal<String, std::string>>(
-            text.substr(1, text.length() - 2)));
+        const std::string& trimmed = text.substr(1, text.length() - 2);
+        std::string unescaped;
+        // CUnescape handles additional escape sequences not allowed by
+        // FHIRPath. However, these additional sequences are disallowed by the
+        // grammar rules (FhirPath.g4) which are enforced by the parser. In
+        // addition, CUnescape does not handle escaped forward slashes.
+        absl::CUnescape(trimmed, &unescaped);
+        return ToAny(std::make_shared<Literal<String, std::string>>(unescaped));
+      }
+
+      case FhirPathLexer::BOOL:
+        return ToAny(std::make_shared<Literal<Boolean, bool>>(text == "true"));
+
+      case FhirPathLexer::EMPTY:
+        return ToAny(std::make_shared<EmptyLiteral>());
 
       default:
 
@@ -956,13 +1266,16 @@ class FhirPathCompilerVisitor : public FhirPathBaseVisitor {
   // specified FHIRPath function.
   std::shared_ptr<ExpressionNode> createFunction(
       const std::string& function_name,
-      std::shared_ptr<ExpressionNode> child_expression) {
+      std::shared_ptr<ExpressionNode> child_expression,
+      std::vector<std::shared_ptr<ExpressionNode>> params) {
     if (function_name == kExistsFunction) {
       return std::make_shared<ExistsFunction>(child_expression);
     } else if (function_name == kNotFunction) {
       return std::make_shared<NotFunction>(child_expression);
     } else if (function_name == kHasValueFunction) {
       return std::make_shared<HasValueFunction>(child_expression);
+    } else if (function_name == kStartsWithFunction) {
+      return std::make_shared<StartsWithFunction>(child_expression, params);
     } else {
       // TODO: Implement set of functions for initial use cases.
       SetError(absl::StrCat("The function ", function_name,
@@ -1100,8 +1413,8 @@ StatusOr<CompiledExpression> CompiledExpression::Compile(
   if (result.isNotNull()) {
     auto root_node = result.as<std::shared_ptr<internal::ExpressionNode>>();
     return CompiledExpression(fhir_path, root_node);
-
   } else {
+    auto status = InvalidArgument(visitor.GetError());
     return InvalidArgument(visitor.GetError());
   }
 }
@@ -1229,9 +1542,17 @@ Status ValidateMessageConstraint(const Message& message,
   FHIR_ASSIGN_OR_RETURN(const EvaluationResult expr_result,
                         expression.Evaluate(message));
 
+  if (!expr_result.GetBoolean().ok()) {
+    *halt_validation = true;
+    return InvalidArgument(absl::StrCat(
+        "Constraint did not evaluate to boolean: ",
+        message.GetDescriptor()->name(), ": \"", expression.fhir_path(), "\""));
+  }
+
   if (!expr_result.GetBoolean().ValueOrDie()) {
     std::string err_msg = absl::StrCat("fhirpath-constraint-violation-",
-                                       message.GetDescriptor()->name());
+                                       message.GetDescriptor()->name(), ": \"",
+                                       expression.fhir_path(), "\"");
 
     *halt_validation = handler(message, nullptr, expression.fhir_path());
     return ::tensorflow::errors::FailedPrecondition(err_msg);
@@ -1253,9 +1574,9 @@ Status ValidateFieldConstraint(const Message& parent,
                         expression.Evaluate(field_value));
 
   if (!expr_result.GetBoolean().ValueOrDie()) {
-    std::string err_msg =
-        absl::StrCat("fhirpath-constraint-violation-",
-                     field->containing_type()->name(), ".", field->json_name());
+    std::string err_msg = absl::StrCat(
+        "fhirpath-constraint-violation-", field->containing_type()->name(), ".",
+        field->json_name(), ": \"", expression.fhir_path(), "\"");
 
     *halt_validation = handler(parent, field, expression.fhir_path());
     return ::tensorflow::errors::FailedPrecondition(err_msg);

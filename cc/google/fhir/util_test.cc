@@ -17,7 +17,6 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/time/time.h"
-#include "google/fhir/systems/systems.h"
 #include "google/fhir/testutil/proto_matchers.h"
 #include "proto/stu3/codes.pb.h"
 #include "proto/stu3/datatypes.pb.h"
@@ -36,7 +35,6 @@ using ::google::fhir::stu3::proto::ContainedResource;
 using ::google::fhir::stu3::proto::Date;
 using ::google::fhir::stu3::proto::DateTime;
 using ::google::fhir::stu3::proto::Encounter;
-using ::google::fhir::systems::kIcd9Schemes;
 using ::google::fhir::testutil::EqualsProto;
 
 TEST(GetTimeFromTimelikeElement, DateTime) {
@@ -69,6 +67,8 @@ TEST(GetTimezone, TimeZoneStr) {
   absl::TimeZone tz;
 
   // Valid cases.
+  ASSERT_TRUE(GetTimezone("Z", &tz).ok());
+  ASSERT_EQ(tz.name(), "UTC");
   ASSERT_TRUE(GetTimezone("-06:00", &tz).ok());
   ASSERT_EQ(tz.name(), "Fixed/UTC-06:00:00");
   ASSERT_TRUE(GetTimezone("+06:00", &tz).ok());
@@ -80,6 +80,38 @@ TEST(GetTimezone, TimeZoneStr) {
   ASSERT_FALSE(GetTimezone("06:30", &tz).ok());
   ASSERT_FALSE(GetTimezone("-15:30", &tz).ok());
   ASSERT_FALSE(GetTimezone("-14:60", &tz).ok());
+}
+
+TEST(BuildTimeZoneFromString, ValidAndInvalidInputs) {
+  // Valid cases.
+  // "Z" and "UTC" are valid specifiers of the UTC time zone.
+  ASSERT_EQ(BuildTimeZoneFromString("Z").ValueOrDie().name(), "UTC");
+  ASSERT_EQ(BuildTimeZoneFromString("UTC").ValueOrDie().name(), "UTC");
+  // {+,-}HH:MM specifies a UTC offset of up to 14 h.
+  ASSERT_EQ(BuildTimeZoneFromString("-06:00").ValueOrDie().name(),
+            "Fixed/UTC-06:00:00");
+  ASSERT_EQ(BuildTimeZoneFromString("+06:00").ValueOrDie().name(),
+            "Fixed/UTC+06:00:00");
+  ASSERT_EQ(BuildTimeZoneFromString("-06:30").ValueOrDie().name(),
+            "Fixed/UTC-06:30:00");
+  ASSERT_EQ(BuildTimeZoneFromString("-14:00").ValueOrDie().name(),
+            "Fixed/UTC-14:00:00");
+  ASSERT_EQ(BuildTimeZoneFromString("+14:00").ValueOrDie().name(),
+            "Fixed/UTC+14:00:00");
+  // tz dataase time zone names are also accepted.
+  ASSERT_EQ(BuildTimeZoneFromString("America/New_York").ValueOrDie().name(),
+            "America/New_York");
+
+  // Error cases.
+  // Time offset string must be signed.
+  ASSERT_FALSE(BuildTimeZoneFromString("06:30").ok());
+  // Offsets must be within +/- 14h from UTC.
+  ASSERT_FALSE(BuildTimeZoneFromString("-15:30").ok());
+  // Minute field must be 00..59.
+  ASSERT_FALSE(BuildTimeZoneFromString("-12:60").ok());
+  // Invalid string that formatting-wise looks like it could have been a
+  // tz database time zone name.
+  ASSERT_FALSE(BuildTimeZoneFromString("America/Not_A_Place").ok());
 }
 
 TEST(WrapContainedResource, Valid) {

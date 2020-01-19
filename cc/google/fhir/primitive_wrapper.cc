@@ -189,12 +189,12 @@ class SpecificWrapper : public PrimitiveWrapper {
 template <typename XhtmlLike>
 class XhtmlWrapper : public SpecificWrapper<XhtmlLike> {
  public:
-  bool HasValue() const { return true; }
+  bool HasValue() const override { return true; }
 
-  bool HasElement() const { return this->GetWrapped()->has_id(); }
+  bool HasElement() const override { return this->GetWrapped()->has_id(); }
 
   // Xhtml can't have extensions, it's always valid
-  Status ValidateProto() const { return Status::OK(); }
+  Status ValidateProto() const override { return Status::OK(); }
 
   StatusOr<std::unique_ptr<::google::protobuf::Message>> GetElement() const override {
     std::unique_ptr<Message> element =
@@ -234,7 +234,7 @@ class XhtmlWrapper : public SpecificWrapper<XhtmlLike> {
 template <typename T>
 class ExtensibleWrapper : public SpecificWrapper<T> {
  public:
-  Status ValidateProto() const {
+  Status ValidateProto() const override {
     FHIR_ASSIGN_OR_RETURN(const bool has_no_value_extension,
                           HasPrimitiveHasNoValue(*this->GetWrapped()));
     const T& typed = dynamic_cast<const T&>(*this->GetWrapped());
@@ -521,30 +521,6 @@ class TimeTypeWrapper : public ExtensibleWrapper<T> {
                                       precision);
     this->WrapAndManage(std::move(wrapped));
     return Status::OK();
-  }
-
-  static StatusOr<absl::TimeZone> BuildTimeZoneFromString(
-      const std::string& time_zone_string) {
-    if (time_zone_string == "UTC" || time_zone_string == "Z") {
-      return absl::UTCTimeZone();
-    }
-    // We can afford to use a simpler pattern here because we've already
-    // validated the timezone above.
-    static const LazyRE2 TIMEZONE_PATTERN = {"(\\+|-)(\\d{2}):(\\d{2})"};
-    std::string sign;
-    int hours;
-    int minutes;
-    if (RE2::FullMatch(time_zone_string, *TIMEZONE_PATTERN, &sign, &hours,
-                       &minutes)) {
-      int seconds_offset = ((hours * 60) + minutes) * 60;
-      seconds_offset *= (sign == "-" ? -1 : 1);
-      return absl::FixedTimeZone(seconds_offset);
-    }
-    absl::TimeZone tz;
-    if (!absl::LoadTimeZone(time_zone_string, &tz)) {
-      return InvalidArgument("Unable to parse timezone: ", time_zone_string);
-    }
-    return tz;
   }
 
   static StatusOr<std::string> ParseTimeZoneString(

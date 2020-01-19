@@ -1,11 +1,11 @@
+load("//bazel:proto.bzl", "fhir_proto_library")
+load("//bazel:protogen.bzl", "gen_fhir_protos")
+
 package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])
 
 exports_files(["version_config.textproto"])
-
-load("//bazel:proto.bzl", "fhir_proto_library")
-load("//bazel:protogen.bzl", "gen_fhir_protos")
 
 fhir_proto_library(
     srcs = ["datatypes.proto"],
@@ -107,25 +107,6 @@ fhir_proto_library(
         "//proto:annotations_proto",
     ],
     proto_library_prefix = "uscore_codes",
-)
-
-fhir_proto_library(
-    srcs = [
-        "version_config.proto",
-    ],
-    proto_library_prefix = "version_config",
-)
-
-fhir_proto_library(
-    srcs = [
-        "profile_config.proto",
-    ],
-    proto_deps = [
-        "//proto:annotations_proto",
-        "//proto/r4/core:codes_proto",
-        "//proto/r4/core:datatypes_proto",
-    ],
-    proto_library_prefix = "profile_config",
 )
 
 # We also make the .proto files readable for testing.

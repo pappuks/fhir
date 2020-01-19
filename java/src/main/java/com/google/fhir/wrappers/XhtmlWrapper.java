@@ -18,9 +18,18 @@ import com.google.fhir.common.ProtoUtils;
 import com.google.fhir.r4.core.Element;
 import com.google.fhir.r4.core.Xhtml;
 import com.google.protobuf.MessageOrBuilder;
+import java.util.regex.Pattern;
 
 /** A wrapper around the Xhtml FHIR primitive type. */
 public class XhtmlWrapper extends PrimitiveWrapper<Xhtml> {
+
+  private static final Pattern REGEX_PATTERN =
+      Pattern.compile(".*"); // Xhtml has no validation pattern.
+
+  @Override
+  protected Pattern getPattern() {
+    return REGEX_PATTERN;
+  }
 
   /** Create an XhtmlWrapper from an Xhtml. */
   public XhtmlWrapper(Xhtml xhtml) {
@@ -37,6 +46,15 @@ public class XhtmlWrapper extends PrimitiveWrapper<Xhtml> {
     if (input == null) {
       throw new IllegalArgumentException("Invalid input: null");
     }
+  }
+
+  /**
+   * We need a custom validateWrapped function because Xhtml doesn't have an extension field. Since
+   * it can't have extensions, and there's no regex for validation, it's always valid
+   */
+  @Override
+  public void validateWrapped() {
+    return;
   }
 
   @Override
